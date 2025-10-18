@@ -1,0 +1,1268 @@
+// ============================================================
+// CONFIGURATION - Easy to modify
+// ============================================================
+const SERVER_PORT = 9050;  // Change this to match your server port
+const SERVER_URL = `http://localhost:${SERVER_PORT}`;
+// ============================================================
+
+// Check if running in trial mode (default to trial unless 'full=true' in URL)
+const urlParams = new URLSearchParams(window.location.search);
+const isTrialMode = urlParams.get('full') !== 'true';
+const TRIAL_MAX_LEVEL = 6;
+
+// Data persistence module (server + fallback to browser)
+const DataManager = {
+    apiUrl: `${SERVER_URL}/api`,
+    autoSaveInterval: null,
+    useServer: true, // Try server first, fallback to browser
+
+    async saveGameData() {
+        const gameData = {
+            level: game.level,
+            score: game.score,
+            highScore: this.getHighScore(),
+            gamesPlayed: this.getGamesPlayed(),
+            lastPlayed: new Date().toISOString(),
+            stats: {
+                totalScore: this.getTotalScore(),
+                levelsCompleted: game.level > 1 ? game.level - 1 : 0
+            }
+        };
+
+        // Try server first
+        if (this.useServer) {
+            try {
+                const response = await fetch(`${this.apiUrl}/data/save`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(gameData)
+                });
+
+                if (response.ok) {
+                    console.log('Game data saved to server (encrypted + synced)');
+                    return;
+                }
+            } catch (error) {
+                console.log('Server not available, using browser storage');
+                this.useServer = false; // Fallback to browser
+            }
+        }
+
+        // Fallback to browser storage
+        CryptoManager.saveEncryptedData(gameData);
+        console.log('Game data saved to browser (encrypted)');
+    },
+
+    async loadGameData() {
+        // Try server first
+        if (this.useServer) {
+            try {
+                const response = await fetch(`${this.apiUrl}/data/load`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && Object.keys(data).length > 0) {
+                        console.log('Game data loaded from server');
+                        return data;
+                    }
+                }
+            } catch (error) {
+                console.log('Server not available, using browser storage');
+                this.useServer = false;
+            }
+        }
+
+        // Fallback to browser storage
+        const data = CryptoManager.loadEncryptedData();
+        if (data) {
+            console.log('Game data loaded from browser');
+        }
+        return data;
+    },
+
+    startAutoSave() {
+        // Auto-save every 30 seconds
+        this.autoSaveInterval = setInterval(() => {
+            if (!game.isGameOver) {
+                this.saveGameData();
+            }
+        }, 30000);
+    },
+
+    stopAutoSave() {
+        if (this.autoSaveInterval) {
+            clearInterval(this.autoSaveInterval);
+            this.autoSaveInterval = null;
+        }
+    },
+
+    getHighScore() {
+        const saved = localStorage.getItem('highScore');
+        return saved ? parseInt(saved) : 0;
+    },
+
+    getGamesPlayed() {
+        const saved = localStorage.getItem('gamesPlayed');
+        return saved ? parseInt(saved) : 0;
+    },
+
+    getTotalScore() {
+        const saved = localStorage.getItem('totalScore');
+        return saved ? parseInt(saved) : 0;
+    },
+
+    updateStats() {
+        const gamesPlayed = this.getGamesPlayed() + 1;
+        const totalScore = this.getTotalScore() + game.score;
+
+        localStorage.setItem('gamesPlayed', gamesPlayed.toString());
+        localStorage.setItem('totalScore', totalScore.toString());
+
+        if (game.score > this.getHighScore()) {
+            localStorage.setItem('highScore', game.score.toString());
+        }
+    }
+};
+
+// Game state
+const game = {
+    canvas: null,
+    ctx: null,
+    score: 0,
+    lives: 3,
+    level: 1,
+    tanks: [],
+    activeTanks: [], // Tanks currently on screen
+    draggableItems: [], // Available items to drag
+    matchedCounts: {}, // Count of how many times each item has been matched
+    fullyMatchedItems: new Set(), // Items that have ALL instances destroyed
+    mistakes: [], // Track mistakes {english, kannada, attempted}
+    missedTanks: [], // Track tanks that reached the end
+    isGameOver: false,
+    spawnInterval: null,
+    baseSpawnRate: 3000,
+    animationFrame: null,
+    draggedElement: null,
+    canvasRect: null,
+    cpuMode: false,
+    cpuInterval: null,
+    speedMultiplier: 1,
+    savedLevel: 1, // Level to return to if player loses immediately after skip
+    hasPlayedCurrentLevel: false, // Track if player has played current level
+    particles: [], // Visual feedback particles
+    audioContext: null, // Audio context for sound effects
+    isTrialMode: isTrialMode // Track if in trial mode
+};
+
+// Path waypoints based on the map image
+const pathWaypoints = [
+    { x: 50, y: 140 },
+    { x: 180, y: 140 },
+    { x: 180, y: 110 },
+    { x: 315, y: 110 },
+    { x: 315, y: 140 },
+    { x: 475, y: 140 },
+    { x: 475, y: 360 },
+    { x: 515, y: 360 },
+    { x: 515, y: 480 },
+    { x: 610, y: 480 },
+    { x: 610, y: 520 },
+    { x: 730, y: 520 },
+    { x: 730, y: 590 },
+    { x: 945, y: 590 },
+    { x: 945, y: 640 },
+    { x: 730, y: 640 },
+    { x: 730, y: 750 },
+    { x: 515, y: 750 },
+    { x: 515, y: 640 },
+    { x: 210, y: 640 },
+    { x: 210, y: 920 },
+    { x: 250, y: 920 }
+];
+
+// Tank class
+class Tank {
+    constructor(vocabulary, vehicleType) {
+        this.vocabulary = vocabulary;
+        this.vehicleType = vehicleType; // 'suv', 'tank', or 'blimp'
+        this.waypointIndex = 0;
+        this.x = pathWaypoints[0].x;
+        this.y = pathWaypoints[0].y;
+        this.speed = this.getSpeed();
+        this.size = this.getSize();
+        this.color = this.getColor();
+        this.progress = 0;
+        this.spawnTime = Date.now(); // Track when tank was spawned
+    }
+
+    getSpeed() {
+        const baseSpeed = 1 + (game.level * 0.15);
+        switch (this.vehicleType) {
+            case 'suv': return baseSpeed * 1.8;
+            case 'tank': return baseSpeed * 1.2;
+            case 'blimp': return baseSpeed * 0.7;
+            default: return baseSpeed;
+        }
+    }
+
+    getSize() {
+        switch (this.vehicleType) {
+            case 'suv': return { width: 35, height: 25 };
+            case 'tank': return { width: 50, height: 35 };
+            case 'blimp': return { width: 80, height: 50 };
+            default: return { width: 50, height: 35 };
+        }
+    }
+
+    getColor() {
+        switch (this.vehicleType) {
+            case 'suv': return '#4CAF50';
+            case 'tank': return '#FF9800';
+            case 'blimp': return '#9C27B0';
+            default: return '#FF9800';
+        }
+    }
+
+    update() {
+        if (this.waypointIndex >= pathWaypoints.length - 1) {
+            return false;
+        }
+
+        const currentWaypoint = pathWaypoints[this.waypointIndex];
+        const nextWaypoint = pathWaypoints[this.waypointIndex + 1];
+
+        const dx = nextWaypoint.x - currentWaypoint.x;
+        const dy = nextWaypoint.y - currentWaypoint.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        // Apply speed multiplier
+        this.progress += this.speed * game.speedMultiplier;
+
+        if (this.progress >= distance) {
+            this.waypointIndex++;
+            this.progress = 0;
+            if (this.waypointIndex >= pathWaypoints.length - 1) {
+                return false;
+            }
+        } else {
+            const ratio = this.progress / distance;
+            this.x = currentWaypoint.x + dx * ratio;
+            this.y = currentWaypoint.y + dy * ratio;
+        }
+
+        return true;
+    }
+
+    draw(ctx) {
+        // Draw vehicle body
+        ctx.fillStyle = this.color;
+        ctx.fillRect(
+            this.x - this.size.width / 2,
+            this.y - this.size.height / 2,
+            this.size.width,
+            this.size.height
+        );
+
+        // Draw border
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(
+            this.x - this.size.width / 2,
+            this.y - this.size.height / 2,
+            this.size.width,
+            this.size.height
+        );
+
+        // Draw vehicle details based on type
+        if (this.vehicleType === 'tank') {
+            // Tank turret
+            ctx.fillStyle = '#D84315';
+            ctx.fillRect(this.x - 10, this.y - 8, 20, 16);
+            // Tank barrel
+            ctx.fillRect(this.x + 10, this.y - 3, 15, 6);
+        } else if (this.vehicleType === 'blimp') {
+            // Blimp gondola
+            ctx.fillStyle = '#7B1FA2';
+            ctx.fillRect(this.x - 15, this.y + 15, 30, 10);
+        } else if (this.vehicleType === 'suv') {
+            // SUV windows
+            ctx.fillStyle = '#81C784';
+            ctx.fillRect(this.x - 8, this.y - 6, 16, 12);
+        }
+
+        // Draw English text on vehicle
+        ctx.fillStyle = '#FFF';
+        ctx.font = 'bold 14px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const maxWidth = this.size.width - 8;
+        const text = this.vocabulary.english;
+
+        ctx.fillText(text, this.x, this.y, maxWidth);
+    }
+}
+
+// Particle class for visual feedback
+class Particle {
+    constructor(x, y, color, type = 'correct') {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.type = type;
+        this.life = 1.0;
+        this.size = type === 'correct' ? 8 : 15;
+
+        if (type === 'correct') {
+            // Explosion particles for correct match
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 2 + Math.random() * 3;
+            this.vx = Math.cos(angle) * speed;
+            this.vy = Math.sin(angle) * speed;
+        } else {
+            // Wrong match - just fades in place
+            this.vx = 0;
+            this.vy = 0;
+        }
+    }
+
+    update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.life -= 0.02;
+
+        if (this.type === 'correct') {
+            this.vy += 0.1; // Gravity for correct particles
+        }
+
+        return this.life > 0;
+    }
+
+    draw(ctx) {
+        ctx.save();
+        ctx.globalAlpha = this.life;
+        ctx.fillStyle = this.color;
+
+        if (this.type === 'correct') {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            // Wrong match - draw X
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(this.x - this.size, this.y - this.size);
+            ctx.lineTo(this.x + this.size, this.y + this.size);
+            ctx.moveTo(this.x + this.size, this.y - this.size);
+            ctx.lineTo(this.x - this.size, this.y + this.size);
+            ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+}
+
+// Audio functions
+function initAudio() {
+    if (!game.audioContext) {
+        try {
+            game.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        } catch (e) {
+            console.log('Web Audio API not supported');
+        }
+    }
+}
+
+function playSound(frequency, duration, type = 'sine') {
+    if (!game.audioContext) return;
+
+    const oscillator = game.audioContext.createOscillator();
+    const gainNode = game.audioContext.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(game.audioContext.destination);
+
+    oscillator.frequency.value = frequency;
+    oscillator.type = type;
+
+    gainNode.gain.setValueAtTime(0.3, game.audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, game.audioContext.currentTime + duration);
+
+    oscillator.start(game.audioContext.currentTime);
+    oscillator.stop(game.audioContext.currentTime + duration);
+}
+
+function playCorrectSound() {
+    // Happy ascending tone
+    playSound(523.25, 0.1, 'sine'); // C5
+    setTimeout(() => playSound(659.25, 0.15, 'sine'), 50); // E5
+}
+
+function playWrongSound() {
+    // Descending error tone
+    playSound(200, 0.2, 'sawtooth');
+}
+
+function createParticles(x, y, color, type, count = 10) {
+    for (let i = 0; i < count; i++) {
+        game.particles.push(new Particle(x, y, color, type));
+    }
+}
+
+function showWelcomeBackMessage() {
+    const canvas = game.canvas;
+    const ctx = game.ctx;
+
+    // Store game state temporarily
+    const tempGameOver = game.isGameOver;
+    game.isGameOver = true; // Pause game loop
+
+    // Draw welcome message
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#4CAF50';
+    ctx.font = 'bold 48px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('Welcome Back!', canvas.width / 2, canvas.height / 2 - 50);
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 28px Arial';
+    ctx.fillText(`Level ${game.level} • Score: ${game.score}`, canvas.width / 2, canvas.height / 2 + 10);
+    ctx.font = '18px Arial';
+    ctx.fillStyle = '#CCC';
+    ctx.fillText('Continuing from your last save...', canvas.width / 2, canvas.height / 2 + 50);
+
+    // Resume game after 2 seconds
+    setTimeout(() => {
+        game.isGameOver = tempGameOver;
+    }, 2000);
+}
+
+// Initialize game
+async function initGame() {
+    game.canvas = document.getElementById('gameCanvas');
+    game.ctx = game.canvas.getContext('2d');
+    game.canvasRect = game.canvas.getBoundingClientRect();
+
+    initAudio();
+
+    // Load saved data if available (only in full version)
+    let hasRestoredData = false;
+    if (!game.isTrialMode) {
+        const savedData = await DataManager.loadGameData();
+        if (savedData && savedData.level) {
+            console.log('✓ Previous save found - continuing from level', savedData.level);
+
+            // Restore game state
+            game.level = savedData.level || 1;
+            game.score = savedData.score || 0;
+            game.savedLevel = savedData.level || 1;
+            hasRestoredData = true;
+        }
+    }
+
+    resetGame(hasRestoredData); // Pass true to skip level/score reset if restoring
+    initializeDraggableItems();
+    startSpawning();
+    gameLoop();
+    setupEventListeners();
+
+    // Show welcome back message AFTER game loop starts (if data was restored)
+    if (hasRestoredData) {
+        setTimeout(() => {
+            showWelcomeBackMessage();
+        }, 300);
+    }
+
+    // Start auto-save (only in full version)
+    if (!game.isTrialMode) {
+        DataManager.startAutoSave();
+    }
+
+    // Save on window close
+    if (!game.isTrialMode) {
+        window.addEventListener('beforeunload', () => {
+            DataManager.saveGameData();
+        });
+    }
+}
+
+// Reset game state
+function resetGame(skipLevelReset = false) {
+    // Only reset score/lives, keep level if skipLevelReset is true
+    if (!skipLevelReset) {
+        game.score = 0;
+        game.level = 1;
+    }
+
+    game.lives = 3;
+    game.tanks = [];
+    game.activeTanks = [];
+    game.matchedCounts = {};
+    game.fullyMatchedItems.clear();
+    game.mistakes = [];
+    game.missedTanks = [];
+    game.isGameOver = false;
+
+    // Restart CPU mode if it was active
+    if (game.cpuMode) {
+        startCPUMode();
+    }
+
+    updateUI();
+    hideGameOver();
+}
+
+// Initialize draggable items based on level
+function initializeDraggableItems() {
+    const vocabulary = getVocabularyForLevel(game.level);
+    game.draggableItems = [...vocabulary];
+
+    renderDraggableItems();
+}
+
+// Render draggable items in sidebar
+function renderDraggableItems() {
+    const container = document.getElementById('draggableItems');
+    container.innerHTML = '';
+
+    game.draggableItems.forEach((item, index) => {
+        const div = document.createElement('div');
+        div.className = 'draggable-item';
+        div.textContent = item.kannada;
+        div.dataset.english = item.english;
+        div.dataset.kannada = item.kannada;
+        div.dataset.index = index;
+        div.draggable = true;
+
+        // Only mark as matched if ALL instances have been destroyed
+        if (game.fullyMatchedItems.has(item.english)) {
+            div.classList.add('matched');
+            div.draggable = false;
+        }
+
+        container.appendChild(div);
+    });
+}
+
+// Start spawning tanks
+function startSpawning() {
+    if (game.spawnInterval) {
+        clearInterval(game.spawnInterval);
+    }
+
+    const baseRate = Math.max(1000, game.baseSpawnRate - (game.level * 200));
+    const spawnRate = baseRate / game.speedMultiplier;
+
+    game.spawnInterval = setInterval(() => {
+        if (!game.isGameOver) {
+            spawnTank();
+        }
+    }, spawnRate);
+}
+
+// Spawn a new tank
+function spawnTank() {
+    // Only spawn tanks for items that haven't been fully matched yet
+    const unmatchedItems = game.draggableItems.filter(item => !game.fullyMatchedItems.has(item.english));
+
+    if (unmatchedItems.length === 0) {
+        // All items fully matched - level up!
+        levelUp();
+        return;
+    }
+
+    // Select random unmatched item, ensuring variety
+    let vocabulary;
+
+    // Try to pick an item that's different from recent spawns
+    if (game.tanks.length > 0) {
+        const recentEnglish = game.tanks.slice(-3).map(t => t.vocabulary.english);
+        const differentItems = unmatchedItems.filter(item => !recentEnglish.includes(item.english));
+
+        if (differentItems.length > 0) {
+            vocabulary = differentItems[Math.floor(Math.random() * differentItems.length)];
+        } else {
+            vocabulary = unmatchedItems[Math.floor(Math.random() * unmatchedItems.length)];
+        }
+    } else {
+        vocabulary = unmatchedItems[Math.floor(Math.random() * unmatchedItems.length)];
+    }
+
+    // Determine vehicle type based on vocabulary difficulty, not level
+    let vehicleType;
+    if (vocabulary.difficulty === 'letter') {
+        vehicleType = 'suv';      // Letters always get SUV (green, fast)
+    } else if (vocabulary.difficulty === 'word') {
+        vehicleType = 'tank';     // Words always get tank (orange, medium)
+    } else {
+        vehicleType = 'blimp';    // Sentences always get blimp (purple, slow)
+    }
+
+    const tank = new Tank(vocabulary, vehicleType);
+    game.tanks.push(tank);
+    game.activeTanks.push(tank);
+}
+
+// Check if dropped item matches a tank
+function checkMatch(kannada, english, dropX, dropY) {
+    // Convert canvas coordinates
+    const canvasRect = game.canvas.getBoundingClientRect();
+
+    let closestTank = null;
+    let closestDistance = Infinity;
+
+    // Find the closest tank
+    for (let i = 0; i < game.activeTanks.length; i++) {
+        const tank = game.activeTanks[i];
+
+        // Calculate tank position on screen
+        const tankScreenX = tank.x * (canvasRect.width / game.canvas.width) + canvasRect.left;
+        const tankScreenY = tank.y * (canvasRect.height / game.canvas.height) + canvasRect.top;
+
+        // Check distance to this tank
+        const distance = Math.sqrt(
+            Math.pow(dropX - tankScreenX, 2) +
+            Math.pow(dropY - tankScreenY, 2)
+        );
+
+        if (distance < 100 && distance < closestDistance) {
+            closestDistance = distance;
+            closestTank = tank;
+        }
+    }
+
+    // Check if we found a close tank
+    if (closestTank) {
+        // Check if the English text matches
+        if (closestTank.vocabulary.english === english) {
+            // Correct match!
+            handleCorrectMatch(closestTank, english);
+            return true;
+        } else {
+            // Wrong match - dragged wrong item to tank
+            // Visual feedback - red X particles
+            createParticles(closestTank.x, closestTank.y, '#F44336', 'wrong', 1);
+
+            // Audio feedback - error sound
+            playWrongSound();
+
+            game.mistakes.push({
+                attempted: kannada,
+                correct: closestTank.vocabulary.kannada,
+                english: closestTank.vocabulary.english
+            });
+            loseLife();
+            return false;
+        }
+    }
+
+    // Not close enough to any tank
+    loseLife();
+    return false;
+}
+
+// Handle correct match
+function handleCorrectMatch(tank, english) {
+    game.score += 10 * game.level;
+
+    // Visual feedback - green particles explosion
+    createParticles(tank.x, tank.y, '#4CAF50', 'correct', 15);
+
+    // Audio feedback - happy sound
+    playCorrectSound();
+
+    // Increment match count
+    if (!game.matchedCounts[english]) {
+        game.matchedCounts[english] = 0;
+    }
+    game.matchedCounts[english]++;
+
+    // Remove tank
+    const tankIndex = game.tanks.indexOf(tank);
+    if (tankIndex > -1) {
+        game.tanks.splice(tankIndex, 1);
+    }
+
+    const activeTankIndex = game.activeTanks.indexOf(tank);
+    if (activeTankIndex > -1) {
+        game.activeTanks.splice(activeTankIndex, 1);
+    }
+
+    // Check if there are any more tanks with this word on screen or in queue
+    const remainingTanksWithWord = game.tanks.filter(t => t.vocabulary.english === english).length;
+
+    // If no more tanks with this word exist, mark as fully matched
+    if (remainingTanksWithWord === 0) {
+        game.fullyMatchedItems.add(english);
+        // Update draggable items display to show green
+        renderDraggableItems();
+    }
+
+    updateUI();
+}
+
+// Level up
+function levelUp() {
+    // Check if in trial mode and trying to go beyond level 6
+    if (game.isTrialMode && game.level >= TRIAL_MAX_LEVEL) {
+        showDownloadScreen();
+        return;
+    }
+
+    game.level++;
+    game.matchedCounts = {};
+    game.fullyMatchedItems.clear();
+    game.tanks = [];
+    game.activeTanks = [];
+
+    // Save level and mark as played when naturally leveling up
+    game.savedLevel = game.level;
+    game.hasPlayedCurrentLevel = false;
+
+    // Load new vocabulary for new level
+    initializeDraggableItems();
+
+    updateUI();
+    startSpawning(); // Update spawn rate
+
+    // Show level up message briefly
+    const canvas = game.canvas;
+    const ctx = game.ctx;
+
+    setTimeout(() => {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 48px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('LEVEL UP!', canvas.width / 2, canvas.height / 2);
+    }, 100);
+}
+
+// Lose a life
+function loseLife() {
+    game.lives--;
+
+    // Mark that player has played this level
+    game.hasPlayedCurrentLevel = true;
+
+    if (game.lives <= 0) {
+        gameOver();
+    }
+}
+
+// Game over
+function gameOver() {
+    game.isGameOver = true;
+    clearInterval(game.spawnInterval);
+    stopCPUMode();
+
+    // If player hasn't played current level (lost immediately after skip), revert to saved level
+    if (!game.hasPlayedCurrentLevel) {
+        game.level = game.savedLevel;
+    }
+
+    // Save game data and update stats (only in full version)
+    if (!game.isTrialMode) {
+        DataManager.updateStats();
+        DataManager.saveGameData();
+    }
+
+    document.getElementById('finalScore').textContent = game.score;
+    document.getElementById('finalLevel').textContent = game.level;
+
+    // Display mistakes
+    displayMistakes();
+
+    document.getElementById('gameOverScreen').style.display = 'flex';
+}
+
+// Display mistakes on game over screen
+function displayMistakes() {
+    const mistakesContainer = document.getElementById('mistakesContainer');
+    mistakesContainer.innerHTML = '';
+
+    if (game.mistakes.length === 0 && game.missedTanks.length === 0) {
+        mistakesContainer.innerHTML = '<p class="no-mistakes">Perfect! No mistakes!</p>';
+        return;
+    }
+
+    // Show wrong matches
+    if (game.mistakes.length > 0) {
+        const wrongSection = document.createElement('div');
+        wrongSection.className = 'mistake-section';
+        wrongSection.innerHTML = '<h3>Wrong Matches:</h3>';
+
+        const mistakeList = document.createElement('div');
+        mistakeList.className = 'mistake-list';
+
+        game.mistakes.forEach(mistake => {
+            const item = document.createElement('div');
+            item.className = 'mistake-item';
+            item.innerHTML = `
+                <div class="mistake-row">
+                    <span class="label">English:</span>
+                    <span class="value">${mistake.english}</span>
+                </div>
+                <div class="mistake-row error">
+                    <span class="label">You used:</span>
+                    <span class="value kannada">${mistake.attempted}</span>
+                </div>
+                <div class="mistake-row correct">
+                    <span class="label">Correct:</span>
+                    <span class="value kannada">${mistake.correct}</span>
+                </div>
+            `;
+            mistakeList.appendChild(item);
+        });
+
+        wrongSection.appendChild(mistakeList);
+        mistakesContainer.appendChild(wrongSection);
+    }
+
+    // Show missed tanks
+    if (game.missedTanks.length > 0) {
+        const missedSection = document.createElement('div');
+        missedSection.className = 'mistake-section';
+        missedSection.innerHTML = '<h3>Missed Vehicles:</h3>';
+
+        const missedList = document.createElement('div');
+        missedList.className = 'mistake-list';
+
+        game.missedTanks.forEach(missed => {
+            const item = document.createElement('div');
+            item.className = 'mistake-item';
+            item.innerHTML = `
+                <div class="mistake-row">
+                    <span class="label">English:</span>
+                    <span class="value">${missed.english}</span>
+                </div>
+                <div class="mistake-row correct">
+                    <span class="label">Should be:</span>
+                    <span class="value kannada">${missed.kannada}</span>
+                </div>
+            `;
+            missedList.appendChild(item);
+        });
+
+        missedSection.appendChild(missedList);
+        mistakesContainer.appendChild(missedSection);
+    }
+}
+
+// Hide game over screen
+function hideGameOver() {
+    document.getElementById('gameOverScreen').style.display = 'none';
+}
+
+// Update UI elements
+function updateUI() {
+    document.getElementById('score').textContent = game.score;
+    document.getElementById('level').textContent = game.level;
+
+    const heartsDisplay = '❤️'.repeat(Math.max(0, game.lives));
+    document.getElementById('lives').textContent = heartsDisplay || '💀';
+}
+
+// Draw the path
+function drawPath(ctx) {
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 80;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.beginPath();
+    ctx.moveTo(pathWaypoints[0].x, pathWaypoints[0].y);
+
+    for (let i = 1; i < pathWaypoints.length; i++) {
+        ctx.lineTo(pathWaypoints[i].x, pathWaypoints[i].y);
+    }
+
+    ctx.stroke();
+}
+
+// Main game loop
+function gameLoop() {
+    const ctx = game.ctx;
+    const canvas = game.canvas;
+
+    // Clear canvas
+    ctx.fillStyle = '#7CB342';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw path
+    drawPath(ctx);
+
+    // Update and draw tanks
+    for (let i = game.tanks.length - 1; i >= 0; i--) {
+        const tank = game.tanks[i];
+        const alive = tank.update();
+
+        if (!alive) {
+            // Tank reached the end - track as missed
+            game.missedTanks.push({
+                english: tank.vocabulary.english,
+                kannada: tank.vocabulary.kannada
+            });
+
+            // Player loses a life
+            loseLife();
+            updateUI();
+
+            // Remove from both arrays
+            game.tanks.splice(i, 1);
+            const activeIndex = game.activeTanks.indexOf(tank);
+            if (activeIndex > -1) {
+                game.activeTanks.splice(activeIndex, 1);
+            }
+        } else {
+            tank.draw(ctx);
+        }
+    }
+
+    // Update and draw particles
+    for (let i = game.particles.length - 1; i >= 0; i--) {
+        const particle = game.particles[i];
+        const alive = particle.update();
+
+        if (!alive) {
+            game.particles.splice(i, 1);
+        } else {
+            particle.draw(ctx);
+        }
+    }
+
+    if (!game.isGameOver) {
+        game.animationFrame = requestAnimationFrame(gameLoop);
+    }
+}
+
+// Toggle fullscreen
+function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(err => {
+            console.log(`Error attempting to enable fullscreen: ${err.message}`);
+        });
+    } else {
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        }
+    }
+}
+
+// Speed control function
+function setSpeed() {
+    const speedInput = prompt('Enter speed multiplier (minimum 1):', game.speedMultiplier);
+
+    if (speedInput !== null) {
+        const speed = parseFloat(speedInput);
+
+        if (!isNaN(speed) && speed >= 1) {
+            game.speedMultiplier = speed;
+            document.getElementById('speedStatus').textContent = speed + 'x';
+
+            // Restart spawning with new speed
+            if (!game.isGameOver) {
+                startSpawning();
+            }
+        } else {
+            alert('Please enter a number greater than or equal to 1!');
+        }
+    }
+}
+
+// Skip to level function
+function skipToLevel() {
+    const maxLevel = game.isTrialMode ? TRIAL_MAX_LEVEL : 999;
+    const levelInput = prompt('Enter level to skip to (current: ' + game.level + ', max: ' + (game.isTrialMode ? TRIAL_MAX_LEVEL + ' [Trial]' : 'unlimited') + '):', game.level);
+
+    if (levelInput !== null) {
+        const targetLevel = parseInt(levelInput);
+
+        if (!isNaN(targetLevel) && targetLevel >= 1) {
+            // Check trial mode limit
+            if (game.isTrialMode && targetLevel > TRIAL_MAX_LEVEL) {
+                showDownloadScreen();
+                return;
+            }
+
+            // Don't save if skipping to same or lower level
+            if (targetLevel > game.savedLevel) {
+                // Only update saved level if not skipping
+                game.savedLevel = game.level;
+            }
+
+            game.level = targetLevel;
+            game.hasPlayedCurrentLevel = false;
+            game.matchedCounts = {};
+            game.fullyMatchedItems.clear();
+            game.tanks = [];
+            game.activeTanks = [];
+            game.lives = 3;
+
+            // Load new vocabulary for target level
+            initializeDraggableItems();
+
+            updateUI();
+
+            // Restart spawning if game is active
+            if (!game.isGameOver) {
+                startSpawning();
+            }
+        } else {
+            alert('Please enter a valid level number!');
+        }
+    }
+}
+
+// CPU Mode functions
+function toggleCPU() {
+    const password = prompt('Enter password to enable CPU mode:');
+
+    if (password === 'abc123') {
+        game.cpuMode = !game.cpuMode;
+
+        const cpuBtn = document.getElementById('cpuBtn');
+        const cpuStatus = document.getElementById('cpuStatus');
+
+        if (game.cpuMode) {
+            cpuBtn.classList.add('active');
+            cpuStatus.textContent = 'AUTO';
+            startCPUMode();
+        } else {
+            cpuBtn.classList.remove('active');
+            cpuStatus.textContent = '';
+            stopCPUMode();
+        }
+    } else if (password !== null) {
+        alert('Incorrect password!');
+    }
+}
+
+function startCPUMode() {
+    if (game.cpuInterval) {
+        clearInterval(game.cpuInterval);
+    }
+
+    // CPU checks for tanks every 100ms
+    game.cpuInterval = setInterval(() => {
+        if (!game.isGameOver && game.cpuMode && game.activeTanks.length > 0) {
+            cpuPlayTurn();
+        }
+    }, 100);
+}
+
+function stopCPUMode() {
+    if (game.cpuInterval) {
+        clearInterval(game.cpuInterval);
+        game.cpuInterval = null;
+    }
+}
+
+function cpuPlayTurn() {
+    // Find the tank that has progressed past halfway (50% of the path)
+    let closestTank = null;
+    let maxProgress = -1;
+
+    const halfwayPoint = pathWaypoints.length / 2;
+
+    for (const tank of game.activeTanks) {
+        const totalProgress = tank.waypointIndex + (tank.progress / 100);
+
+        // Only consider tanks that have passed halfway
+        if (totalProgress >= halfwayPoint) {
+            if (totalProgress > maxProgress) {
+                maxProgress = totalProgress;
+                closestTank = tank;
+            }
+        }
+    }
+
+    if (closestTank) {
+        // Automatically match it
+        handleCorrectMatch(closestTank, closestTank.vocabulary.english);
+    }
+}
+
+// Download screen functions
+function showDownloadScreen() {
+    game.isGameOver = true;
+    clearInterval(game.spawnInterval);
+    stopCPUMode();
+    document.getElementById('downloadScreen').style.display = 'flex';
+}
+
+function hideDownloadScreen() {
+    document.getElementById('downloadScreen').style.display = 'none';
+    game.isGameOver = false;
+}
+
+function handleDownload() {
+    // Create download link for full version
+    const downloadUrl = window.location.origin + window.location.pathname + '?full=true';
+    alert('Full Version URL:\n\n' + downloadUrl + '\n\nBookmark this URL to access the full version!\n\nFor desktop app, run: python3 LangFight.py');
+}
+
+function continueTrial() {
+    hideDownloadScreen();
+    // Reset to level 1 and restart
+    game.level = 1;
+    game.savedLevel = 1;
+    resetGame();
+    initializeDraggableItems();
+    startSpawning();
+    gameLoop();
+}
+
+// Setup event listeners
+function setupEventListeners() {
+    document.getElementById('restartBtn').addEventListener('click', () => {
+        resetGame();
+        initializeDraggableItems();
+        startSpawning();
+        gameLoop();
+    });
+
+    // CPU button
+    document.getElementById('cpuBtn').addEventListener('click', toggleCPU);
+
+    // Speed button
+    document.getElementById('speedBtn').addEventListener('click', setSpeed);
+
+    // Level skip button
+    document.getElementById('levelSkipBtn').addEventListener('click', skipToLevel);
+
+    // Listen for * key to toggle fullscreen
+    document.addEventListener('keydown', (event) => {
+        if (event.key === '*') {
+            toggleFullscreen();
+        }
+    });
+
+    // Drag and drop event listeners
+    const draggableContainer = document.getElementById('draggableItems');
+
+    draggableContainer.addEventListener('dragstart', (e) => {
+        if (e.target.classList.contains('draggable-item') && !e.target.classList.contains('matched')) {
+            e.target.classList.add('dragging');
+            game.draggedElement = e.target;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', e.target.dataset.english);
+        }
+    });
+
+    draggableContainer.addEventListener('dragend', (e) => {
+        if (e.target.classList.contains('draggable-item')) {
+            e.target.classList.remove('dragging');
+        }
+    });
+
+    // Canvas drop zone
+    game.canvas.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+    });
+
+    game.canvas.addEventListener('drop', (e) => {
+        e.preventDefault();
+
+        if (game.draggedElement) {
+            const english = game.draggedElement.dataset.english;
+            const kannada = game.draggedElement.dataset.kannada;
+
+            // Check match at drop location
+            checkMatch(kannada, english, e.clientX, e.clientY);
+
+            game.draggedElement = null;
+        }
+    });
+
+    // Download screen buttons
+    document.getElementById('downloadBtn').addEventListener('click', handleDownload);
+    document.getElementById('continueTrialBtn').addEventListener('click', continueTrial);
+
+    // Data menu buttons
+    document.getElementById('dataMenuBtn').addEventListener('click', () => {
+        document.getElementById('dataMenu').style.display = 'flex';
+    });
+
+    document.getElementById('closeDataMenuBtn').addEventListener('click', () => {
+        document.getElementById('dataMenu').style.display = 'none';
+    });
+
+    document.getElementById('exportDataBtn').addEventListener('click', () => {
+        CryptoManager.exportToFile();
+    });
+
+    document.getElementById('importDataBtn').addEventListener('click', () => {
+        document.getElementById('importFileInput').click();
+    });
+
+    document.getElementById('importFileInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            try {
+                const data = await CryptoManager.importFromFile(file);
+                alert('Data imported successfully!\n\nReload the page to see your imported data.');
+                document.getElementById('dataMenu').style.display = 'none';
+            } catch (error) {
+                alert('Failed to import data: ' + error.message);
+            }
+        }
+        e.target.value = ''; // Reset input
+    });
+
+    document.getElementById('exportKeyBtn').addEventListener('click', () => {
+        CryptoManager.exportKey();
+    });
+
+    document.getElementById('syncSettingsBtn').addEventListener('click', async () => {
+        document.getElementById('dataMenu').style.display = 'none';
+
+        // Load current settings
+        try {
+            const response = await fetch(`${DataManager.apiUrl}/sync/settings`);
+            if (response.ok) {
+                const settings = await response.json();
+                document.getElementById('syncEnabled').checked = settings.enabled || false;
+                document.getElementById('syncUrl').value = settings.url || 'https://example.com/api/save';
+            }
+        } catch (error) {
+            console.log('Could not load sync settings from server');
+        }
+
+        document.getElementById('syncMenu').style.display = 'flex';
+    });
+
+    document.getElementById('closeSyncMenuBtn').addEventListener('click', () => {
+        document.getElementById('syncMenu').style.display = 'none';
+    });
+
+    document.getElementById('saveSyncBtn').addEventListener('click', async () => {
+        const settings = {
+            enabled: document.getElementById('syncEnabled').checked,
+            url: document.getElementById('syncUrl').value
+        };
+
+        try {
+            const response = await fetch(`${DataManager.apiUrl}/sync/settings`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+
+            if (response.ok) {
+                alert('Sync settings saved!\n\n' +
+                      (settings.enabled ? `✓ Auto-sync enabled to:\n${settings.url}` : '✗ Auto-sync disabled'));
+                document.getElementById('syncMenu').style.display = 'none';
+            } else {
+                alert('Failed to save settings. Make sure the server is running.');
+            }
+        } catch (error) {
+            alert('Server not available. Settings not saved.');
+        }
+    });
+}
+
+// Start game when page loads
+window.addEventListener('load', initGame);

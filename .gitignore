@@ -1,0 +1,32 @@
+# Environment variables (contains encryption key)
+.env
+
+# Encrypted game data
+EMDATA.txt
+
+# Sync settings (may contain server URLs)
+sync_settings.json
+mainsite/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

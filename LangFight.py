@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import webbrowser
+import time
+import threading
+import os
+import sys
+import json
+import subprocess
+
+try:
+    from pynput.keyboard import Controller, Key
+except ImportError:
+    print("Installing required package: pynput")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "pynput"])
+    from pynput.keyboard import Controller, Key
+
+from encryption_manager import EncryptionManager
+
+PORT = 9048
+HOST = "localhost"
+
+# Initialize encryption manager
+encryption_manager = EncryptionManager()
+encryption_manager.load_or_create_key()
+
+# Sync settings file
+SYNC_SETTINGS_FILE = "sync_settings.json"
+
+def load_sync_settings():
+    """Load sync settings from file"""
+    if os.path.exists(SYNC_SETTINGS_FILE):
+        try:
+            with open(SYNC_SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+
+    # Auto-sync enabled by default with environment variable URL
+    default_url = os.getenv('SYNC_URL', 'https://example.com/api/save')
+    default_settings = {"enabled": True, "url": default_url}
+
+    # Save default settings
+    save_sync_settings(default_settings)
+
+    return default_settings
+
+def save_sync_settings(settings):
+    """Save sync settings to file"""
+    with open(SYNC_SETTINGS_FILE, 'w') as f:
+        json.dump(settings, f, indent=2)
+
+class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory="src", **kwargs)
+
+    def log_message(self, format, *args):
+        # Suppress default logging
+        pass
+
+    def end_headers(self):
+        # Add CORS headers
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def do_GET(self):
+        # Handle API endpoints
+        if self.path == '/api/sync/settings':
+            # Get sync settings
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            settings = load_sync_settings()
+            self.wfile.write(json.dumps(settings).encode())
+            return
+
+        elif self.path == '/api/data/load':
+            # Load encrypted data
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            data = encryption_manager.load_encrypted_data()
+            self.wfile.write(json.dumps(data if data else {}).encode())
+            return
+
+        # Default file serving
+        super().do_GET()
+
+    def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length) if content_length > 0 else b'{}'
+
+        # Handle sync settings update
+        if self.path == '/api/sync/settings':
+            try:
+                settings = json.loads(post_data.decode())
+                save_sync_settings(settings)
+
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode())
+
+                if settings.get('enabled'):
+                    print(f"\n✓ Sync enabled to: {settings.get('url')}")
+                else:
+                    print("\n✗ Sync disabled")
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+            return
+
+        # Handle save data request
+        elif self.path == '/api/data/save':
+            try:
+                data = json.loads(post_data.decode())
+
+                # Save encrypted data locally
+                encryption_manager.save_encrypted_data(data)
+
+                # Sync to remote if enabled
+                settings = load_sync_settings()
+                if settings.get('enabled') and settings.get('url'):
+                    threading.Thread(
+                        target=self.sync_to_remote,
+                        args=(settings['url'],),
+                        daemon=True
+                    ).start()
+
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+            return
+
+        super().do_POST()
+
+    def sync_to_remote(self, upload_url):
+        """Sync encrypted data to remote server using curl"""
+        try:
+            # Read encrypted data from file
+            with open('EMDATA.txt', 'r') as f:
+                encrypted_data = f.read()
+
+            # Create JSON payload
+            payload = json.dumps({'data': encrypted_data})
+
+            # Use curl to upload
+            result = subprocess.run(
+                ['curl', '-X', 'POST', upload_url,
+                 '-H', 'Content-Type: application/json',
+                 '-d', payload,
+                 '-s', '-w', '\n%{http_code}'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                http_code = lines[-1] if lines else '0'
+
+                if http_code == '200':
+                    print(f"✓ Data synced to {upload_url}")
+                else:
+                    # Only show error if it's not the default example URL
+                    if upload_url != 'https://example.com/api/save':
+                        print(f"✗ Sync failed (HTTP {http_code})")
+            else:
+                if upload_url != 'https://example.com/api/save':
+                    print(f"✗ Sync error: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            print("✗ Sync timeout")
+        except Exception as e:
+            print(f"✗ Sync error: {e}")
+
+def press_asterisk():
+    """Wait 0.6 seconds and press the * key"""
+    time.sleep(0.6)
+    keyboard = Controller()
+    keyboard.press('*')
+    keyboard.release('*')
+    print("Pressed * key to toggle fullscreen")
+
+def start_server():
+    """Start the HTTP server"""
+    with socketserver.TCPServer((HOST, PORT), CustomHTTPRequestHandler) as httpd:
+        url = f"http://{HOST}:{PORT}/"
+
+        print("=" * 60)
+        print("LangFight - Local Game Server")
+        print("=" * 60)
+        print(f"Server: {url}")
+        print(f"Encryption: {'✓ Key loaded' if encryption_manager.key else '✗ No key'}")
+
+        settings = load_sync_settings()
+        sync_url = settings.get('url', 'https://example.com/api/save')
+
+        if settings.get('enabled'):
+            if sync_url != 'https://example.com/api/save':
+                print(f"Sync: ✓ Auto-sync enabled → {sync_url}")
+            else:
+                print(f"Sync: ⚠ Enabled but needs URL (💾 Data → ⚙️ Sync Settings)")
+        else:
+            print(f"Sync: ✗ Disabled")
+
+        print("")
+        print("Features:")
+        print("  ✓ Local HTTP server for game")
+        print("  ✓ Encrypted data storage (EMDATA.txt)")
+        print("  ✓ Automatic cloud sync (when enabled)")
+        print("  ✓ Export/Import save files")
+        print("")
+        print("Press Ctrl+C to stop the server")
+        print("=" * 60)
+        print("")
+
+        # Open browser
+        webbrowser.open(url)
+
+        # Start thread to press * after delay
+        asterisk_thread = threading.Thread(target=press_asterisk, daemon=True)
+        asterisk_thread.start()
+
+        # Start server
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n\n" + "=" * 60)
+            print("Shutting down server...")
+
+            # Check if EMDATA.txt exists and show status
+            if os.path.exists('EMDATA.txt'):
+                file_size = os.path.getsize('EMDATA.txt')
+                print(f"✓ Game data saved: EMDATA.txt ({file_size} bytes)")
+            else:
+                print("ℹ No game data saved yet")
+
+            print("Goodbye!")
+            print("=" * 60)
+
+            httpd.shutdown()
+
+if __name__ == "__main__":
+    # Change to script directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+
+    start_server()

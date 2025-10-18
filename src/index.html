@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangFight - Kannada Learning Game</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <div class="header">
+            <h1>LangFight</h1>
+            <div class="stats">
+                <div class="stat">
+                    <span class="label">Score:</span>
+                    <span id="score">0</span>
+                </div>
+                <div class="stat">
+                    <span class="label">Lives:</span>
+                    <span id="lives">❤️❤️❤️</span>
+                </div>
+                <div class="stat">
+                    <span class="label">Level:</span>
+                    <span id="level">1</span>
+                </div>
+                <div class="cpu-control">
+                    <button id="cpuBtn" class="cpu-btn">CPU</button>
+                    <span id="cpuStatus" class="cpu-status"></span>
+                </div>
+                <div class="speed-control">
+                    <button id="speedBtn" class="speed-btn">Speed</button>
+                    <span id="speedStatus" class="speed-status">1x</span>
+                </div>
+                <div class="level-control">
+                    <button id="levelSkipBtn" class="level-skip-btn">Skip Level</button>
+                </div>
+                <div class="data-control">
+                    <button id="dataMenuBtn" class="data-menu-btn">💾 Data</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Management Menu -->
+        <div class="data-menu" id="dataMenu" style="display: none;">
+            <div class="data-menu-content">
+                <h3>Data Management</h3>
+                <button id="exportDataBtn" class="menu-btn">📥 Export EMDATA.txt</button>
+                <button id="importDataBtn" class="menu-btn">📤 Import EMDATA.txt</button>
+                <button id="exportKeyBtn" class="menu-btn">🔑 Export .env Key</button>
+                <button id="syncSettingsBtn" class="menu-btn">⚙️ Sync Settings</button>
+                <button id="closeDataMenuBtn" class="menu-btn close-btn">✖ Close</button>
+                <input type="file" id="importFileInput" accept=".txt" style="display: none;">
+            </div>
+        </div>
+
+        <!-- Sync Settings Menu -->
+        <div class="data-menu" id="syncMenu" style="display: none;">
+            <div class="data-menu-content">
+                <h3>Cloud Sync Settings</h3>
+                <div style="margin: 20px 0;">
+                    <label style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                        <input type="checkbox" id="syncEnabled" style="width: 20px; height: 20px;">
+                        <span style="font-size: 16px;">Enable automatic sync</span>
+                    </label>
+                    <label style="display: block; margin-bottom: 10px;">
+                        <span style="font-size: 14px; color: #666;">Server URL:</span>
+                        <input type="text" id="syncUrl" placeholder="https://example.com/api/save"
+                               style="width: 100%; padding: 10px; margin-top: 5px; border: 2px solid #ddd; border-radius: 5px; font-size: 14px;">
+                    </label>
+                </div>
+                <button id="saveSyncBtn" class="menu-btn">💾 Save Settings</button>
+                <button id="closeSyncMenuBtn" class="menu-btn close-btn">✖ Close</button>
+            </div>
+        </div>
+
+        <div class="game-layout">
+            <div class="sidebar">
+                <div class="sidebar-title">Drag to Match</div>
+                <div id="draggableItems" class="draggable-items"></div>
+            </div>
+
+            <div class="canvas-container">
+                <canvas id="gameCanvas" width="1000" height="1000"></canvas>
+            </div>
+        </div>
+
+        <div class="game-over-screen" id="gameOverScreen" style="display: none;">
+            <div class="game-over-content">
+                <h2>Game Over!</h2>
+                <p>Final Score: <span id="finalScore">0</span></p>
+                <p>Level Reached: <span id="finalLevel">1</span></p>
+
+                <div id="mistakesContainer" class="mistakes-container"></div>
+
+                <button id="restartBtn" class="restart-btn">Play Again</button>
+            </div>
+        </div>
+
+        <div class="download-screen" id="downloadScreen" style="display: none;">
+            <div class="download-content">
+                <h2>Trial Version Complete!</h2>
+                <p class="download-message">You've reached the end of the free trial!</p>
+                <p class="download-info">Level 6+ is available in the full version.</p>
+                <div class="download-benefits">
+                    <h3>Full Version Features:</h3>
+                    <ul>
+                        <li>Unlimited levels with advanced sentences</li>
+                        <li>Save your progress with encrypted data</li>
+                        <li>Offline play - no internet required</li>
+                        <li>Sync progress across devices</li>
+                    </ul>
+                </div>
+                <button id="downloadBtn" class="download-btn">Download Full Version</button>
+                <button id="continueTrialBtn" class="continue-btn">Continue Trial (Level 1-6)</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="vocabulary.js"></script>
+    <script src="crypto.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
