@@ -3,7 +3,8 @@
 
 # Encrypted game data
 EMDATA.txt
-
+START_HERE.sh
+START_HERE.py
 # Sync settings (may contain server URLs)
 sync_settings.json
 mainsite/
