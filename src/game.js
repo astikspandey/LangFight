@@ -1100,7 +1100,7 @@ function hideDownloadScreen() {
 function handleDownload() {
     // Create download link for full version
     const downloadUrl = window.location.origin + window.location.pathname + '?full=true';
-    alert('Full Version URL:\n\n' + downloadUrl + '\n\nBookmark this URL to access the full version!\n\nFor desktop app, run: python3 LangFight.py');
+    alert('Full Version URL:\n\n' + downloadUrl + '\n\nBookmark this URL to access the full version!\n\nFor desktop app, run: python3 LangGames.py');
 }
 
 function continueTrial() {

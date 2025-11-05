@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WalkerAuth Client for LangFight
+WalkerAuth Client for LangGames
 Handles OAuth authentication and decryption of user data from WalkerAuth
 """
 

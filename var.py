@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Configuration file for LangFight
+Configuration file for LangGames
 Contains all URLs and configuration variables
 """
 
@@ -58,7 +58,7 @@ SYNC_URL_ENV = os.getenv('SYNC_URL', DEFAULT_SYNC_URL)
 def print_config():
     """Print current configuration"""
     print("=" * 60)
-    print("LangFight Configuration")
+    print("LangGames Configuration")
     print("=" * 60)
     print(f"Server: {SERVER_URL}")
     print(f"API Base: {API_BASE_URL}")

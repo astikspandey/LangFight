@@ -212,7 +212,7 @@ def start_server():
         url = f"http://{HOST}:{PORT}/"
 
         print("=" * 60)
-        print("LangFight - Local Game Server")
+        print("LangGames - Local Game Server")
         print("=" * 60)
         print(f"Server: {url}")
         print(f"Encryption: {'✓ Key loaded' if encryption_manager.key else '✗ No key'}")
