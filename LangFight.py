@@ -84,6 +84,13 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        # Serve landing page at root
+        if self.path == '/':
+            self.path = '/landing.html'
+        # Serve game at /game
+        elif self.path == '/game':
+            self.path = '/index.html'
+
         # Handle API endpoints
         if self.path == '/api/sync/settings':
             # Get sync settings
@@ -197,7 +204,7 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         // Redirect to game after 2 seconds
         setTimeout(() => {{
-            window.location.href = '/';
+            window.location.href = '/game';
         }}, 2000);
     </script>
 </body>
