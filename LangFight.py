@@ -25,9 +25,14 @@ else:
     print("pynput disabled by DISABLE_PYNPUT=1; fullscreen auto-toggle disabled")
 
 from encryption_manager import EncryptionManager
+from walkerauth_client import WalkerAuthClient
 
 PORT = int(os.getenv('PORT', '9048'))
 HOST = os.getenv('HOST', '0.0.0.0')
+
+# WalkerAuth Configuration
+WALKERAUTH_SECRET_KEY = "langgames_secret_key_12345"
+walkerauth_client = WalkerAuthClient(WALKERAUTH_SECRET_KEY)
 
 # Initialize encryption manager
 encryption_manager = EncryptionManager()
@@ -98,12 +103,155 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(data if data else {}).encode())
             return
 
+        elif self.path.startswith('/auth/success'):
+            # Handle WalkerAuth success redirect
+            # Parse query parameters
+            from urllib.parse import urlparse, parse_qs
+            parsed_url = urlparse(self.path)
+            params = parse_qs(parsed_url.query)
+            token = params.get('token', [None])[0]
+
+            if not token:
+                self.send_response(400)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b'<html><body><h1>Error: No token provided</h1></body></html>')
+                return
+
+            # Verify token and get user data
+            user_data = walkerauth_client.verify_session(token)
+
+            if not user_data:
+                self.send_response(400)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b'<html><body><h1>Error: Invalid or expired token</h1></body></html>')
+                return
+
+            # Send success page with user data
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+
+            html = f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Authentication Successful - LangGames</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 20px;
+        }}
+        .container {{
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+            text-align: center;
+        }}
+        h1 {{
+            color: #667eea;
+            margin-bottom: 20px;
+        }}
+        .success-icon {{
+            font-size: 64px;
+            margin-bottom: 20px;
+        }}
+        .user-info {{
+            background: #f7f7f7;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }}
+        .redirect-message {{
+            color: #666;
+            margin-top: 20px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">✓</div>
+        <h1>Authentication Successful!</h1>
+        <div class="user-info">
+            <p><strong>{user_data.get('username', 'User')}</strong></p>
+            <p>{user_data.get('email', '')}</p>
+        </div>
+        <p class="redirect-message">Redirecting to LangGames...</p>
+    </div>
+    <script>
+        // Store user data in localStorage
+        localStorage.setItem('walkerauth_token', '{token}');
+        localStorage.setItem('user_email', '{user_data.get('email', '')}');
+        localStorage.setItem('user_name', '{user_data.get('username', '')}');
+        localStorage.setItem('user_avatar', '{user_data.get('profilePictureUrl', '')}');
+
+        // Redirect to game after 2 seconds
+        setTimeout(() => {{
+            window.location.href = '/';
+        }}, 2000);
+    </script>
+</body>
+</html>
+            '''
+            self.wfile.write(html.encode())
+            return
+
         # Default file serving
         super().do_GET()
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
         post_data = self.rfile.read(content_length) if content_length > 0 else b'{}'
+
+        # Handle WalkerAuth OAuth callback
+        if self.path == '/oauth/callback':
+            try:
+                data = json.loads(post_data.decode())
+                encrypted = data.get('encrypted')
+                iv = data.get('iv')
+                site_id = data.get('siteId')
+
+                print(f"\n📝 Received OAuth callback from {site_id}")
+
+                # Decrypt user data
+                user_data = walkerauth_client.decrypt_user_data(encrypted, iv)
+
+                if not user_data:
+                    self.send_response(500)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": "Failed to decrypt user data"}).encode())
+                    return
+
+                print(f"✓ Authenticated user: {user_data.get('username')} ({user_data.get('email')})")
+
+                # Generate session token
+                token = walkerauth_client.generate_session_token(user_data)
+                print(f"✓ Session token generated: {token[:20]}...")
+
+                # Return success with token
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "token": token}).encode())
+
+            except Exception as e:
+                print(f"✗ Error in OAuth callback: {e}")
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+            return
 
         # Handle sync settings update
         if self.path == '/api/sync/settings':

@@ -1264,5 +1264,54 @@ function setupEventListeners() {
     });
 }
 
+// WalkerAuth Integration
+function initAuth() {
+    const token = localStorage.getItem('walkerauth_token');
+    const userName = localStorage.getItem('user_name');
+    const userEmail = localStorage.getItem('user_email');
+    const userAvatar = localStorage.getItem('user_avatar');
+
+    const loginBtn = document.getElementById('loginBtn');
+    const userProfile = document.getElementById('userProfile');
+    const userNameEl = document.getElementById('userName');
+    const userAvatarEl = document.getElementById('userAvatar');
+    const logoutBtn = document.getElementById('logoutBtn');
+
+    if (token && userName) {
+        // User is logged in
+        loginBtn.style.display = 'none';
+        userProfile.style.display = 'flex';
+        userNameEl.textContent = userName;
+
+        if (userAvatar) {
+            userAvatarEl.src = userAvatar;
+            userAvatarEl.style.display = 'block';
+        } else {
+            userAvatarEl.style.display = 'none';
+        }
+    } else {
+        // User is not logged in
+        loginBtn.style.display = 'block';
+        userProfile.style.display = 'none';
+    }
+
+    // Login button handler
+    loginBtn.addEventListener('click', () => {
+        window.location.href = 'https://walkerauth.walkerco.co?id=LangGames';
+    });
+
+    // Logout button handler
+    logoutBtn.addEventListener('click', () => {
+        localStorage.removeItem('walkerauth_token');
+        localStorage.removeItem('user_name');
+        localStorage.removeItem('user_email');
+        localStorage.removeItem('user_avatar');
+        window.location.reload();
+    });
+}
+
 // Start game when page loads
-window.addEventListener('load', initGame);
+window.addEventListener('load', () => {
+    initAuth();
+    initGame();
+});
