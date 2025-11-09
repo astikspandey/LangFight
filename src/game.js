@@ -186,7 +186,6 @@ class Tank {
         this.color = this.getColor();
         this.progress = 0;
         this.spawnTime = Date.now(); // Track when tank was spawned
-        this.showHint = false; // Track if hint should be shown
     }
 
     getSpeed() {
@@ -248,12 +247,6 @@ class Tank {
     }
 
     draw(ctx) {
-        // Check if 1.5 seconds have passed since spawn
-        const timeSinceSpawn = Date.now() - this.spawnTime;
-        if (timeSinceSpawn >= 1500) {
-            this.showHint = true;
-        }
-
         // Draw vehicle body
         ctx.fillStyle = this.color;
         ctx.fillRect(
@@ -300,19 +293,6 @@ class Tank {
         const text = this.vocabulary.english;
 
         ctx.fillText(text, this.x, this.y, maxWidth);
-
-        // Draw hint (Kannada text) after 1.5 seconds
-        if (this.showHint) {
-            ctx.fillStyle = '#FFD700';
-            ctx.font = 'bold 16px Arial';
-            ctx.strokeStyle = '#000';
-            ctx.lineWidth = 3;
-
-            // Draw hint above the vehicle
-            const hintY = this.y - this.size.height / 2 - 15;
-            ctx.strokeText(this.vocabulary.kannada, this.x, hintY);
-            ctx.fillText(this.vocabulary.kannada, this.x, hintY);
-        }
     }
 }
 
@@ -534,6 +514,10 @@ function renderDraggableItems() {
     container.innerHTML = '';
 
     game.draggableItems.forEach((item, index) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'draggable-item-wrapper';
+        wrapper.style.position = 'relative';
+
         const div = document.createElement('div');
         div.className = 'draggable-item';
         div.textContent = item.kannada;
@@ -548,7 +532,45 @@ function renderDraggableItems() {
             div.draggable = false;
         }
 
-        container.appendChild(div);
+        // Create hint element
+        const hint = document.createElement('div');
+        hint.className = 'hint-tooltip';
+        hint.textContent = item.english;
+        hint.style.cssText = `
+            position: absolute;
+            left: 100%;
+            top: 50%;
+            transform: translateY(-50%);
+            margin-left: 10px;
+            background: rgba(0, 0, 0, 0.9);
+            color: #FFD700;
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+            z-index: 1000;
+        `;
+
+        // Add hover functionality with 0.5s delay
+        let hoverTimeout;
+        div.addEventListener('mouseenter', () => {
+            hoverTimeout = setTimeout(() => {
+                hint.style.opacity = '1';
+            }, 500); // 0.5 seconds = 500ms
+        });
+
+        div.addEventListener('mouseleave', () => {
+            clearTimeout(hoverTimeout);
+            hint.style.opacity = '0';
+        });
+
+        wrapper.appendChild(div);
+        wrapper.appendChild(hint);
+        container.appendChild(wrapper);
     });
 }
 
